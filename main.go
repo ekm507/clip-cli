@@ -28,7 +28,7 @@ const (
 	textModelPath    = "models/text.onnx"
 	tokenizerPath    = "models/tokenizer.json"
 	dbPath           = "smart_gallery.db"
-	ortSharedLibPath = "./libonnxruntime.so" // در ویندوز: onnxruntime.dll
+	ortSharedLibPath = "/usr/lib/libonnxruntime.so" // در ویندوز: onnxruntime.dll
 	embedDim         = 512                   // طول بردار خروجی CLIP (معمولا 512 یا 768)
 	maxTokens        = 77                    // طول استاندارد توکن‌های CLIP
 )
@@ -36,10 +36,10 @@ const (
 // نام ورودی و خروجی‌های مدل در ONNX (اگر مدل شما نام متفاوتی دارد اینجا تغییر دهید)
 const (
 	visionInputName  = "pixel_values"
-	visionOutputName = "output" // در بعضی مدل‌ها: image_embeds
+	visionOutputName = "image_embeds" // در بعضی مدل‌ها: image_embeds
 	textInputIds     = "input_ids"
 	textAttention    = "attention_mask"
-	textOutputName   = "output" // در بعضی مدل‌ها: text_embeds
+	textOutputName   = "sentence_embeddings" // در بعضی مدل‌ها: text_embeds
 )
 
 func main() {
@@ -211,7 +211,7 @@ func runVisionModel(inputData []float32) ([]float32, error) {
 
 func runTextModel(idsData []int64, masksData []int64) ([]float32, error) {
 	inShape := ort.NewShape(1, maxTokens)
-	
+
 	idsTensor, err := ort.NewTensor(inShape, idsData)
 	if err != nil {
 		return nil, err
@@ -314,7 +314,7 @@ func processText(text string) ([]int64, []int64, error) {
 		ids[i] = int64(en.Ids[i])
 		masks[i] = int64(en.AttentionMask[i])
 	}
-	
+
 	return ids, masks, nil
 }
 
@@ -356,4 +356,3 @@ func bytesToFloat32Array(b []byte) []float32 {
 	_ = binary.Read(buf, binary.LittleEndian, &arr)
 	return arr
 }
-
