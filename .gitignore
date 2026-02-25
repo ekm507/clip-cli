@@ -2,3 +2,4 @@
 clip-cli
 libonnxruntime.so
 models/
+*.db
