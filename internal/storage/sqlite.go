@@ -14,8 +14,9 @@ type Store struct {
 }
 
 type SearchResult struct {
-	Path     string
-	Distance float32
+	Path      string
+	Distance  float32
+	Thumbnail []byte
 }
 
 func Open(path string, embeddingDim int64) (*Store, error) {
@@ -89,17 +90,26 @@ func (s *Store) UpsertImage(path string, embedding []float32, thumbnail []byte) 
 	return tx.Commit()
 }
 
-func (s *Store) SearchByEmbedding(embedding []float32, limit int) ([]SearchResult, error) {
+func (s *Store) SearchByEmbedding(embedding []float32, limit int, includeThumbnail bool) ([]SearchResult, error) {
 	if limit < 1 {
 		limit = 1
 	}
 
-	rows, err := s.db.Query(
-		`SELECT images.path, image_embeddings.distance
+	query := `SELECT images.path, image_embeddings.distance
 		 FROM image_embeddings
 		 JOIN images ON images.id = image_embeddings.rowid
 		 WHERE embedding MATCH ? AND k = ?
-		 ORDER BY distance`,
+		 ORDER BY distance`
+	if includeThumbnail {
+		query = `SELECT images.path, image_embeddings.distance, images.thumbnail
+		 FROM image_embeddings
+		 JOIN images ON images.id = image_embeddings.rowid
+		 WHERE embedding MATCH ? AND k = ?
+		 ORDER BY distance`
+	}
+
+	rows, err := s.db.Query(
+		query,
 		toVecJSON(embedding),
 		limit,
 	)
@@ -111,8 +121,14 @@ func (s *Store) SearchByEmbedding(embedding []float32, limit int) ([]SearchResul
 	results := make([]SearchResult, 0, limit)
 	for rows.Next() {
 		var result SearchResult
-		if err := rows.Scan(&result.Path, &result.Distance); err != nil {
-			return nil, err
+		if includeThumbnail {
+			if err := rows.Scan(&result.Path, &result.Distance, &result.Thumbnail); err != nil {
+				return nil, err
+			}
+		} else {
+			if err := rows.Scan(&result.Path, &result.Distance); err != nil {
+				return nil, err
+			}
 		}
 		results = append(results, result)
 	}

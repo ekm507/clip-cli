@@ -84,6 +84,20 @@ Search by image:
 ./clip-cli search --image path/to/query.jpg --limit 5
 ```
 
+Retrieve thumbnails while searching:
+
+```bash
+./clip-cli search --text "cat" --thumb-dir ./thumbs
+./clip-cli search --text "cat" --thumb-temp
+./clip-cli search --text "cat" --sixel
+```
+
+Thumbnail mode notes:
+
+- Default is no thumbnails.
+- Use only one mode at a time: `--thumb-dir`, `--thumb-temp`, or `--sixel`.
+- `--sixel` requires `img2sixel` available in `PATH`.
+
 Generate embeddings (text or image):
 
 ```bash
@@ -106,7 +120,7 @@ JSON output:
 Example JSON response:
 
 ```json
-{"files":["/path/img1.jpg","/path/img2.jpg"]}
+{"results":[{"path":"/path/img1.jpg","thumbnail_path":"/tmp/clip-cli-thumbs-xxxx/001.jpg"}]}
 ```
 
 Embeddings are stored in `smart_gallery.db`.

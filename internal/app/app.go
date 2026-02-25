@@ -9,6 +9,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"clip_cli/internal/clip"
@@ -33,6 +35,15 @@ type fileOutput struct {
 
 type embeddingOutput struct {
 	Embedding []float32 `json:"embedding"`
+}
+
+type searchJSONItem struct {
+	Path          string `json:"path"`
+	ThumbnailPath string `json:"thumbnail_path,omitempty"`
+}
+
+type searchOutput struct {
+	Results []searchJSONItem `json:"results"`
 }
 
 func New(cfg config.Config) Application {
@@ -85,8 +96,11 @@ func (a Application) Run(args []string) error {
 	searchText := searchCmd.String("text", "", "Text query to search for")
 	searchImage := searchCmd.String("image", "", "Image query path")
 	searchLimit := searchCmd.Int("limit", 5, "Number of results to show")
+	searchThumbDir := searchCmd.String("thumb-dir", "", "Write result thumbnails to this directory")
+	searchThumbTemp := searchCmd.Bool("thumb-temp", false, "Write result thumbnails to a temporary directory")
+	searchSixel := searchCmd.Bool("sixel", false, "Render result thumbnails inline via sixel (requires img2sixel)")
 	searchCmd.Usage = func() {
-		fmt.Fprintln(os.Stdout, "Usage: clip-cli search (--text <query> | --image <path>) [--limit N] [--json]")
+		fmt.Fprintln(os.Stdout, "Usage: clip-cli search (--text <query> | --image <path>) [--limit N] [--thumb-dir dir|--thumb-temp|--sixel] [--json]")
 		searchCmd.PrintDefaults()
 	}
 
@@ -132,11 +146,35 @@ func (a Application) Run(args []string) error {
 		if (*searchText == "" && *searchImage == "") || (*searchText != "" && *searchImage != "") {
 			return errors.New("exactly one of --text or --image is required for search")
 		}
+		thumbModeCount := 0
+		if *searchThumbDir != "" {
+			thumbModeCount++
+		}
+		if *searchThumbTemp {
+			thumbModeCount++
+		}
+		if *searchSixel {
+			thumbModeCount++
+		}
+		if thumbModeCount > 1 {
+			return errors.New("use only one thumbnail mode: --thumb-dir, --thumb-temp, or --sixel")
+		}
+
 		store, err := openStore()
 		if err != nil {
 			return err
 		}
-		return a.handleSearch(store, runner, *searchText, *searchImage, *searchLimit, jsonOutput)
+		return a.handleSearch(
+			store,
+			runner,
+			*searchText,
+			*searchImage,
+			*searchLimit,
+			*searchThumbDir,
+			*searchThumbTemp,
+			*searchSixel,
+			jsonOutput,
+		)
 	case "embed":
 		if err := embedCmd.Parse(args[1:]); err != nil {
 			if errors.Is(err, flag.ErrHelp) {
@@ -192,9 +230,20 @@ func (a Application) handleAddMany(store *storage.Store, runner clip.Runner, ima
 	return emitFiles(added, jsonOutput)
 }
 
-func (a Application) handleSearch(store *storage.Store, runner clip.Runner, textQuery string, imageQuery string, limit int, jsonOutput bool) error {
+func (a Application) handleSearch(
+	store *storage.Store,
+	runner clip.Runner,
+	textQuery string,
+	imageQuery string,
+	limit int,
+	thumbDir string,
+	thumbTemp bool,
+	sixel bool,
+	jsonOutput bool,
+) error {
 	var queryEmbedding []float32
 	var err error
+	includeThumbnails := thumbDir != "" || thumbTemp || sixel
 
 	if textQuery != "" {
 		fmt.Fprintln(os.Stderr, "Tokenizing text...")
@@ -223,17 +272,52 @@ func (a Application) handleSearch(store *storage.Store, runner clip.Runner, text
 	}
 	vector.L2Normalize(queryEmbedding)
 
-	results, err := store.SearchByEmbedding(queryEmbedding, limit)
+	results, err := store.SearchByEmbedding(queryEmbedding, limit, includeThumbnails)
 	if err != nil {
 		return fmt.Errorf("failed to search image embeddings: %w", err)
+	}
+
+	if sixel {
+		if err := renderSixelThumbnails(results); err != nil {
+			return err
+		}
+	}
+
+	var thumbPaths map[string]string
+	if thumbDir != "" || thumbTemp {
+		resolvedDir := thumbDir
+		if thumbTemp {
+			tmpDir, err := os.MkdirTemp("", "clip-cli-thumbs-*")
+			if err != nil {
+				return fmt.Errorf("failed to create temp thumbnail directory: %w", err)
+			}
+			resolvedDir = tmpDir
+		}
+
+		written, err := writeThumbnails(results, resolvedDir)
+		if err != nil {
+			return err
+		}
+		thumbPaths = written
+		fmt.Fprintln(os.Stderr, "Thumbnails written to:", resolvedDir)
+	}
+
+	if jsonOutput {
+		items := make([]searchJSONItem, 0, len(results))
+		for _, result := range results {
+			items = append(items, searchJSONItem{
+				Path:          result.Path,
+				ThumbnailPath: thumbPaths[result.Path],
+			})
+		}
+		return json.NewEncoder(os.Stdout).Encode(searchOutput{Results: items})
 	}
 
 	paths := make([]string, 0, len(results))
 	for _, result := range results {
 		paths = append(paths, result.Path)
 	}
-
-	return emitFiles(paths, jsonOutput)
+	return emitFiles(paths, false)
 }
 
 func (a Application) handleEmbed(runner clip.Runner, text string, imagePath string, format string, outPath string) error {
@@ -366,4 +450,65 @@ func printRootHelp() {
 	fmt.Fprintln(os.Stdout, "  --json  Output machine-readable JSON where supported")
 	fmt.Fprintln(os.Stdout, "")
 	fmt.Fprintln(os.Stdout, "Run 'clip-cli <command> --help' for command-specific options.")
+}
+
+func writeThumbnails(results []storage.SearchResult, dir string) (map[string]string, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("failed to create thumbnail directory: %w", err)
+	}
+
+	paths := make(map[string]string, len(results))
+	for i, result := range results {
+		if len(result.Thumbnail) == 0 {
+			continue
+		}
+		fileName := fmt.Sprintf("%03d.jpg", i+1)
+		thumbPath := filepath.Join(dir, fileName)
+		if err := os.WriteFile(thumbPath, result.Thumbnail, 0o644); err != nil {
+			return nil, fmt.Errorf("failed to write thumbnail %q: %w", thumbPath, err)
+		}
+		paths[result.Path] = thumbPath
+	}
+	return paths, nil
+}
+
+func renderSixelThumbnails(results []storage.SearchResult) error {
+	img2sixelPath, err := exec.LookPath("img2sixel")
+	if err != nil {
+		return errors.New("sixel rendering requires 'img2sixel' in PATH")
+	}
+
+	for i, result := range results {
+		if len(result.Thumbnail) == 0 {
+			continue
+		}
+
+		tmpFile, err := os.CreateTemp("", "clip-cli-sixel-*.jpg")
+		if err != nil {
+			return fmt.Errorf("failed to create temporary thumbnail file: %w", err)
+		}
+		tmpPath := tmpFile.Name()
+		if _, err := tmpFile.Write(result.Thumbnail); err != nil {
+			tmpFile.Close()
+			os.Remove(tmpPath)
+			return fmt.Errorf("failed to write temporary thumbnail: %w", err)
+		}
+		if err := tmpFile.Close(); err != nil {
+			os.Remove(tmpPath)
+			return err
+		}
+
+		fmt.Fprintf(os.Stderr, "Result %d: %s\n", i+1, result.Path)
+		cmd := exec.Command(img2sixelPath, tmpPath)
+		cmd.Stdout = os.Stderr
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			os.Remove(tmpPath)
+			return fmt.Errorf("failed to render sixel thumbnail: %w", err)
+		}
+		fmt.Fprintln(os.Stderr, "")
+		_ = os.Remove(tmpPath)
+	}
+
+	return nil
 }
