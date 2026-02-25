@@ -33,6 +33,17 @@ Put files at:
 - `models/text.onnx`
 - `models/tokenizer.json`
 
+## Configuration
+
+Runtime defaults are in [internal/config/config.go](/home/erfan/works/clip_cli/internal/config/config.go).
+
+Thumbnail generation is configurable:
+
+- `ThumbnailEnabled` (bool): enable/disable thumbnail creation when running `add`
+- `ThumbnailSize` (int): square thumbnail side in pixels (for example `96`, `160`, `256`)
+
+Thumbnails are stored in SQLite (`images.thumbnail` BLOB) and are generated as JPEG.
+
 ## Build
 
 ```bash

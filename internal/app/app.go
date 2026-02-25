@@ -160,6 +160,16 @@ func (a Application) Run(args []string) error {
 func (a Application) handleAddMany(store *storage.Store, runner clip.Runner, imagePaths []string, jsonOutput bool) error {
 	added := make([]string, 0, len(imagePaths))
 	for _, imagePath := range imagePaths {
+		var thumbnail []byte
+		if a.cfg.ThumbnailEnabled {
+			fmt.Fprintln(os.Stderr, "Generating thumbnail...", imagePath)
+			generated, err := clip.GenerateThumbnailJPEG(imagePath, a.cfg.ThumbnailSize)
+			if err != nil {
+				return fmt.Errorf("failed to generate thumbnail for %q: %w", imagePath, err)
+			}
+			thumbnail = generated
+		}
+
 		fmt.Fprintln(os.Stderr, "Processing image...", imagePath)
 		pixelValues, err := clip.ProcessImageExact(imagePath)
 		if err != nil {
@@ -173,7 +183,7 @@ func (a Application) handleAddMany(store *storage.Store, runner clip.Runner, ima
 		}
 
 		vector.L2Normalize(embedding)
-		if err := store.UpsertImage(imagePath, embedding); err != nil {
+		if err := store.UpsertImage(imagePath, embedding, thumbnail); err != nil {
 			return fmt.Errorf("failed to save image embedding for %q: %w", imagePath, err)
 		}
 		added = append(added, imagePath)

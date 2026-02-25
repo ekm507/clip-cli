@@ -9,6 +9,8 @@ type Config struct {
 	ORTSharedLibPath string
 	EmbeddingDim     int64
 	MaxTokens        int64
+	ThumbnailEnabled bool
+	ThumbnailSize    int
 	VisionInputName  string
 	VisionOutputName string
 	TextInputIDs     string
@@ -26,6 +28,8 @@ func Default() Config {
 		ORTSharedLibPath: "/usr/lib/libonnxruntime.so",
 		EmbeddingDim:     512,
 		MaxTokens:        77,
+		ThumbnailEnabled: true,
+		ThumbnailSize:    160,
 		VisionInputName:  "pixel_values",
 		VisionOutputName: "image_embeds",
 		TextInputIDs:     "input_ids",
