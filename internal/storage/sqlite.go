@@ -1,9 +1,10 @@
 package storage
 
 import (
-	"bytes"
 	"database/sql"
-	"encoding/binary"
+	"fmt"
+	"strconv"
+	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -12,18 +13,27 @@ type Store struct {
 	db *sql.DB
 }
 
-type ImageRecord struct {
-	Path      string
-	Embedding []float32
+type SearchResult struct {
+	Path     string
+	Distance float32
 }
 
-func Open(path string) (*Store, error) {
+func Open(path string, embeddingDim int64) (*Store, error) {
 	db, err := sql.Open("sqlite3", path)
 	if err != nil {
 		return nil, err
 	}
 
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS images (id INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT UNIQUE, embedding BLOB)`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS images (id INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT UNIQUE)`); err != nil {
+		db.Close()
+		return nil, err
+	}
+
+	createVecTableQuery := fmt.Sprintf(
+		`CREATE VIRTUAL TABLE IF NOT EXISTS image_embeddings USING vec0(embedding float[%d])`,
+		embeddingDim,
+	)
+	if _, err := db.Exec(createVecTableQuery); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -36,30 +46,65 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) UpsertImage(path string, embedding []float32) error {
-	blob := float32ArrayToBytes(embedding)
-	_, err := s.db.Exec(`INSERT OR REPLACE INTO images (path, embedding) VALUES (?, ?)`, path, blob)
-	return err
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO images (path) VALUES (?)`, path); err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	var imageID int64
+	if err := tx.QueryRow(`SELECT id FROM images WHERE path = ?`, path).Scan(&imageID); err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	if _, err := tx.Exec(`DELETE FROM image_embeddings WHERE rowid = ?`, imageID); err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	if _, err := tx.Exec(
+		`INSERT INTO image_embeddings(rowid, embedding) VALUES(?, ?)`,
+		imageID,
+		toVecJSON(embedding),
+	); err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	return tx.Commit()
 }
 
-func (s *Store) ListImages() ([]ImageRecord, error) {
-	rows, err := s.db.Query(`SELECT path, embedding FROM images`)
+func (s *Store) SearchByEmbedding(embedding []float32, limit int) ([]SearchResult, error) {
+	if limit < 1 {
+		limit = 1
+	}
+
+	rows, err := s.db.Query(
+		`SELECT images.path, image_embeddings.distance
+		 FROM image_embeddings
+		 JOIN images ON images.id = image_embeddings.rowid
+		 WHERE embedding MATCH ? AND k = ?
+		 ORDER BY distance`,
+		toVecJSON(embedding),
+		limit,
+	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	results := make([]ImageRecord, 0)
+	results := make([]SearchResult, 0, limit)
 	for rows.Next() {
-		var path string
-		var blob []byte
-		if err := rows.Scan(&path, &blob); err != nil {
-			continue
+		var result SearchResult
+		if err := rows.Scan(&result.Path, &result.Distance); err != nil {
+			return nil, err
 		}
-
-		results = append(results, ImageRecord{
-			Path:      path,
-			Embedding: bytesToFloat32Array(blob),
-		})
+		results = append(results, result)
 	}
 
 	if err := rows.Err(); err != nil {
@@ -69,15 +114,15 @@ func (s *Store) ListImages() ([]ImageRecord, error) {
 	return results, nil
 }
 
-func float32ArrayToBytes(values []float32) []byte {
-	buf := new(bytes.Buffer)
-	_ = binary.Write(buf, binary.LittleEndian, values)
-	return buf.Bytes()
-}
-
-func bytesToFloat32Array(data []byte) []float32 {
-	values := make([]float32, len(data)/4)
-	buf := bytes.NewReader(data)
-	_ = binary.Read(buf, binary.LittleEndian, &values)
-	return values
+func toVecJSON(values []float32) string {
+	var builder strings.Builder
+	builder.WriteByte('[')
+	for i, value := range values {
+		if i > 0 {
+			builder.WriteByte(',')
+		}
+		builder.WriteString(strconv.FormatFloat(float64(value), 'f', -1, 32))
+	}
+	builder.WriteByte(']')
+	return builder.String()
 }
