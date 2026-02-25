@@ -1,10 +1,12 @@
 package app
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	"sort"
+	"os"
+	"strings"
 
 	"clip_cli/internal/clip"
 	"clip_cli/internal/config"
@@ -16,9 +18,8 @@ type Application struct {
 	cfg config.Config
 }
 
-type SearchResult struct {
-	Path  string
-	Score float32
+type fileOutput struct {
+	Files []string `json:"files"`
 }
 
 func New(cfg config.Config) Application {
@@ -26,13 +27,15 @@ func New(cfg config.Config) Application {
 }
 
 func (a Application) Run(args []string) error {
+	args, jsonOutput := extractJSONFlag(args)
+
 	cleanup, err := clip.InitializeEnvironment(a.cfg.ORTSharedLibPath)
 	if err != nil {
 		return fmt.Errorf("failed to initialize ONNX Runtime: %w", err)
 	}
 	defer cleanup()
 
-	store, err := storage.Open(a.cfg.DatabasePath)
+	store, err := storage.Open(a.cfg.DatabasePath, a.cfg.EmbeddingDim)
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
 	}
@@ -59,7 +62,7 @@ func (a Application) Run(args []string) error {
 		if *addImagePath == "" {
 			return errors.New("image path is required: --image path/to/img.jpg")
 		}
-		return a.handleAdd(store, runner, *addImagePath)
+		return a.handleAdd(store, runner, *addImagePath, jsonOutput)
 	case "search":
 		if err := searchCmd.Parse(args[1:]); err != nil {
 			return err
@@ -67,20 +70,20 @@ func (a Application) Run(args []string) error {
 		if *searchText == "" {
 			return errors.New("search text is required: --text \"your query\"")
 		}
-		return a.handleSearch(store, runner, *searchText, *searchLimit)
+		return a.handleSearch(store, runner, *searchText, *searchLimit, jsonOutput)
 	default:
 		return fmt.Errorf("invalid command %q. use add or search", args[0])
 	}
 }
 
-func (a Application) handleAdd(store *storage.Store, runner clip.Runner, imagePath string) error {
-	fmt.Println("Processing image...")
+func (a Application) handleAdd(store *storage.Store, runner clip.Runner, imagePath string, jsonOutput bool) error {
+	fmt.Fprintln(os.Stderr, "Processing image...")
 	pixelValues, err := clip.ProcessImageExact(imagePath)
 	if err != nil {
 		return fmt.Errorf("failed to process image: %w", err)
 	}
 
-	fmt.Println("Extracting image embedding...")
+	fmt.Fprintln(os.Stderr, "Extracting image embedding...")
 	embedding, err := runner.RunVisionModel(pixelValues)
 	if err != nil {
 		return fmt.Errorf("failed to run vision model: %w", err)
@@ -91,43 +94,61 @@ func (a Application) handleAdd(store *storage.Store, runner clip.Runner, imagePa
 		return fmt.Errorf("failed to save image embedding: %w", err)
 	}
 
-	fmt.Printf("Image %s added successfully.\n", imagePath)
-	return nil
+	return emitFiles([]string{imagePath}, jsonOutput)
 }
 
-func (a Application) handleSearch(store *storage.Store, runner clip.Runner, query string, limit int) error {
-	fmt.Println("Tokenizing text...")
+func (a Application) handleSearch(store *storage.Store, runner clip.Runner, query string, limit int, jsonOutput bool) error {
+	fmt.Fprintln(os.Stderr, "Tokenizing text...")
 	ids, masks, err := clip.ProcessText(query, a.cfg.TokenizerPath, a.cfg.MaxTokens)
 	if err != nil {
 		return fmt.Errorf("failed to tokenize query text: %w", err)
 	}
 
-	fmt.Println("Extracting query embedding...")
+	fmt.Fprintln(os.Stderr, "Extracting query embedding...")
 	queryEmbedding, err := runner.RunTextModel(ids, masks)
 	if err != nil {
 		return fmt.Errorf("failed to run text model: %w", err)
 	}
 	vector.L2Normalize(queryEmbedding)
 
-	records, err := store.ListImages()
+	results, err := store.SearchByEmbedding(queryEmbedding, limit)
 	if err != nil {
-		return fmt.Errorf("failed to read image embeddings: %w", err)
+		return fmt.Errorf("failed to search image embeddings: %w", err)
 	}
 
-	results := make([]SearchResult, 0, len(records))
-	for _, record := range records {
-		score := vector.DotProduct(queryEmbedding, record.Embedding)
-		results = append(results, SearchResult{Path: record.Path, Score: score})
+	paths := make([]string, 0, len(results))
+	for _, result := range results {
+		paths = append(paths, result.Path)
 	}
 
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Score > results[j].Score
-	})
+	return emitFiles(paths, jsonOutput)
+}
 
-	fmt.Printf("\n--- Search results for: %q ---\n", query)
-	for i := 0; i < limit && i < len(results); i++ {
-		fmt.Printf("%d. similarity: %.4f | path: %s\n", i+1, results[i].Score, results[i].Path)
+func emitFiles(files []string, jsonOutput bool) error {
+	if jsonOutput {
+		return json.NewEncoder(os.Stdout).Encode(fileOutput{Files: files})
 	}
-
+	for _, file := range files {
+		fmt.Fprintln(os.Stdout, file)
+	}
 	return nil
+}
+
+func extractJSONFlag(args []string) ([]string, bool) {
+	filtered := make([]string, 0, len(args))
+	jsonOutput := false
+
+	for _, arg := range args {
+		switch {
+		case arg == "--json":
+			jsonOutput = true
+		case strings.HasPrefix(arg, "--json="):
+			value := strings.TrimPrefix(arg, "--json=")
+			jsonOutput = value == "1" || strings.EqualFold(value, "true")
+		default:
+			filtered = append(filtered, arg)
+		}
+	}
+
+	return filtered, jsonOutput
 }
