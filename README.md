@@ -55,16 +55,22 @@ Add an image:
 ./clip-cli add --image path/to/image.jpg
 ```
 
+Add multiple images at once:
+
+```bash
+./clip-cli add --image img1.jpg --image img2.jpg img3.jpg
+```
+
 Search images by text:
 
 ```bash
 ./clip-cli search --text "a cat sitting on a chair" --limit 5
 ```
 
-Search similar images by image:
+Search by image:
 
 ```bash
-./clip-cli search-image --image path/to/query.jpg --limit 5
+./clip-cli search --image path/to/query.jpg --limit 5
 ```
 
 Generate embeddings (text or image):
