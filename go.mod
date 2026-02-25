@@ -3,6 +3,7 @@ module clip_cli
 go 1.25.0
 
 require (
+	github.com/asg017/sqlite-vec-go-bindings v0.1.6
 	github.com/disintegration/imaging v1.6.2
 	github.com/mattn/go-sqlite3 v1.14.34
 	github.com/sugarme/tokenizer v0.3.0
