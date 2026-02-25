@@ -61,6 +61,20 @@ Search images by text:
 ./clip-cli search --text "a cat sitting on a chair" --limit 5
 ```
 
+Search similar images by image:
+
+```bash
+./clip-cli search-image --image path/to/query.jpg --limit 5
+```
+
+Generate embeddings (text or image):
+
+```bash
+./clip-cli embed --text "a cat on a chair" --format json
+./clip-cli embed --image path/to/query.jpg --format base64
+./clip-cli embed --image path/to/query.jpg --format f32le --out query.vec
+```
+
 Output behavior:
 
 - `stdout`: result filenames only (one per line in text mode)
