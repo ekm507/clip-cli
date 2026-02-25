@@ -61,4 +61,21 @@ Search images by text:
 ./clip-cli search --text "a cat sitting on a chair" --limit 5
 ```
 
+Output behavior:
+
+- `stdout`: result filenames only (one per line in text mode)
+- `stderr`: progress/log messages
+
+JSON output:
+
+```bash
+./clip-cli search --text "a cat sitting on a chair" --limit 5 --json
+```
+
+Example JSON response:
+
+```json
+{"files":["/path/img1.jpg","/path/img2.jpg"]}
+```
+
 Embeddings are stored in `smart_gallery.db`.
